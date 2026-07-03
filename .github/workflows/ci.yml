@@ -13,6 +13,8 @@ on:
     paths:
       - "app/**"
       - ".github/workflows/ci.yml"
+  # Lets you trigger CI manually from the Actions tab, independent of a PR.
+  workflow_dispatch:
 
 # Cancel any in-progress CI run on the same PR when a new commit arrives.
 # No point testing code that's already been superseded.

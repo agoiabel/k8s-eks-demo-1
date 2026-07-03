@@ -17,6 +17,10 @@ on:
       - "app/**"
       - "k8s/**"
       - ".github/workflows/cd.yml"
+  # Lets you trigger a build+deploy manually from the Actions tab —
+  # useful for re-deploying without a new commit (e.g. after fixing
+  # an image manually, like the arm64-only incident).
+  workflow_dispatch:
 
 # id-token:write is required to assume the AWS IAM role via OIDC —
 # no long-lived AWS keys stored in GitHub secrets.
