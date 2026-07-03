@@ -1,0 +1,107 @@
+name: CD
+
+# Runs on every push to main that touches the app or its manifests.
+# Builds a multi-arch (amd64 + arm64) image, pushes it to ECR tagged
+# with the commit SHA, then rolls it out to EKS.
+#
+# Multi-arch matters because GitHub-hosted runners are amd64-only —
+# without QEMU + buildx cross-compiling the arm64 layer, a manifest
+# list would silently ship amd64-only and break on Graviton nodes
+# (or vice versa if a runner ever changes). This is what caused the
+# ImagePullBackOff incident this pipeline exists to prevent.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "k8s/**"
+      - ".github/workflows/cd.yml"
+
+# id-token:write is required to assume the AWS IAM role via OIDC —
+# no long-lived AWS keys stored in GitHub secrets.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: k8s-eks-demo-1/app
+  EKS_CLUSTER: k8s-eks-demo-1
+  NAMESPACE: nodejs-demo
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ubuntu-latest runners are amd64 only. QEMU lets buildx
+      # cross-compile the arm64 layer without a native arm64 runner.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push multi-arch image
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="${REGISTRY}/${ECR_REPOSITORY}:${{ github.sha }}"
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t "$IMAGE" \
+            -t "${REGISTRY}/${ECR_REPOSITORY}:latest" \
+            --push \
+            ./app
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
+
+      # namespace.yaml is intentionally excluded — the GitHub Actions
+      # IAM role only has namespace-scoped EKS access (see
+      # terraform/github-oidc.tf), matching least-privilege RBAC.
+      # The namespace itself is created once, out of band.
+      - name: Apply manifests
+        run: |
+          kubectl apply -n "$NAMESPACE" \
+            -f k8s/configmap.yaml \
+            -f k8s/deployment.yaml \
+            -f k8s/service.yaml
+
+      - name: Roll out new image
+        run: |
+          kubectl set image deployment/nodejs-demo \
+            nodejs-demo=${{ needs.build-and-push.outputs.image }} \
+            -n "$NAMESPACE"
+          kubectl rollout status deployment/nodejs-demo -n "$NAMESPACE" --timeout=120s

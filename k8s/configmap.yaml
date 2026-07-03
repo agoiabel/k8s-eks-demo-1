@@ -1,0 +1,18 @@
+# A ConfigMap holds non-sensitive configuration as key-value pairs.
+# The values here become environment variables inside the container.
+#
+# Why not hardcode these in the Deployment?
+# Because the same Docker image can now run in dev, staging, and prod
+# with different configuration — just by applying a different ConfigMap.
+# The image itself never changes between environments.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nodejs-demo-config
+  namespace: nodejs-demo
+  labels:
+    app: nodejs-demo
+data:
+  APP_VERSION: "1.0.0"
+  WELCOME_MESSAGE: "Hello from Node.js running on Amazon EKS!"

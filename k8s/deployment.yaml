@@ -1,0 +1,119 @@
+# A Deployment declares what should run, how many copies,
+# how to update them, and how to check they're healthy.
+# This file covers ONLY the workload — no networking concerns.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nodejs-demo
+  namespace: nodejs-demo
+  labels:
+    app: nodejs-demo
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: nodejs-demo
+  # selector.matchLabels MUST exactly match template.metadata.labels.
+  # Kubernetes validates this — a mismatch is a rejected resource.
+  
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # With 2 replicas:
+      # maxUnavailable: 1 means at least 1 pod is always running
+      # maxSurge: 1 means we can temporarily run 3 pods during a deploy
+      # This guarantees zero downtime on every update.
+      maxUnavailable: 1
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app: nodejs-demo
+    spec:
+      containers:
+        - name: nodejs-demo
+          # Replace <ECR_URL> with the actual URL.
+          # The pipeline overrides this with the git SHA tag on every deploy.
+          image: 974842794124.dkr.ecr.us-east-1.amazonaws.com/k8s-eks-demo-1/app:v1
+
+          # IfNotPresent: use a cached image if it's already on the node.
+          # On EKS the first pull is Always (nodes start clean).
+          # This prevents unnecessary re-pulls on pod restarts.
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          # Naming the port ('http') lets the Service and probes
+          # reference it by name rather than number — if the port
+          # ever changes, update it in one place instead of three.
+
+          # Pull ALL keys from the ConfigMap as environment variables.
+          # APP_VERSION and WELCOME_MESSAGE become available to the app
+          # as process.env.APP_VERSION and process.env.WELCOME_MESSAGE.
+          envFrom:
+            - configMapRef:
+                name: nodejs-demo-config
+
+          # Resource requests: what this pod NEEDS.
+          # The scheduler uses requests to decide which node to place
+          # the pod on. A node is 'full' when the sum of all pod
+          # requests equals the node's allocatable capacity.
+          #
+          # Resource limits: the MAXIMUM the pod can use.
+          # Exceeding CPU limit → the process is throttled.
+          # Exceeding memory limit → the process is killed (OOMKilled)
+          # and the container is restarted.
+          #
+          # Without these, one runaway pod can starve every other pod
+          # on the same node of CPU and memory.
+          resources:
+            requests:
+              cpu: "100m"      # 100 millicores = 10% of one CPU core
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+          # Liveness probe: kubelet calls this on every interval.
+          # If it fails failureThreshold times in a row, kubelet kills
+          # and restarts the container. Used for detecting deadlocks
+          # or fatal states the app can't recover from on its own.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10  # wait 10s after startup before checking
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # Readiness probe: controls whether this pod receives traffic.
+          # A pod that passes liveness but fails readiness is kept alive
+          # but removed from the Service's endpoint list — requests stop
+          # routing to it until it becomes ready again.
+          # Useful for apps with warm-up time (loading config, connecting
+          # to databases, warming caches).
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+            
+      # topologySpreadConstraints distributes pods across nodes.
+      # With 2 replicas and 2 nodes, one pod lands on each node.
+      # If one node goes down, the other still has a running pod.
+      # Without this, the scheduler might place both pods on the
+      # same node — and a single node failure takes out the app entirely.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: nodejs-demo

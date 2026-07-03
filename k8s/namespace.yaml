@@ -1,0 +1,15 @@
+# A Namespace is a virtual partition inside the cluster.
+# Every resource we create goes in 'nodejs-demo' — not 'default'.
+# This is the universal real-world practice: nobody ships to 'default'.
+# Benefits:
+#   - Clean separation from system resources and other apps
+#   - RBAC can be scoped per namespace
+#   - Resource quotas can be applied per namespace
+#   - kubectl -n nodejs-demo shows only our resources
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nodejs-demo
+  labels:
+    app.kubernetes.io/managed-by: kubectl

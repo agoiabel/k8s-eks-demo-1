@@ -1,0 +1,93 @@
+# CI runs on every pull request targeting main.
+# It never touches AWS, never pushes images, never deploys.
+# Its only job: catch broken code before it reaches main.
+# Fast feedback, no production risk.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    # Only run CI when relevant files change.
+    # A PR that only edits README.md doesn't need a Docker build.
+    paths:
+      - "app/**"
+      - ".github/workflows/ci.yml"
+
+# Cancel any in-progress CI run on the same PR when a new commit arrives.
+# No point testing code that's already been superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── TEST ──────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          # Cache node_modules keyed by the hash of package-lock.json.
+          # If dependencies haven't changed, modules restore from cache
+          # in seconds instead of downloading fresh.
+          cache: "npm"
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        # npm ci (not npm install) in CI:
+        # - Installs exactly what's in package-lock.json, no drift
+        # - Fails if package-lock.json is missing or out of sync
+        # - Faster than npm install (skips dependency resolution)
+        run: npm ci
+        working-directory: app
+
+      - name: Run tests
+        run: npm test
+        working-directory: app
+
+  # ─── DOCKER BUILD CHECK ────────────────────────────────────────────────
+  # Catches Dockerfile errors and broken COPY paths before merge.
+  # We don't push — this is purely a build validity check.
+  docker-build-check:
+    name: Docker build check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ubuntu-latest runners are amd64 only. QEMU lets buildx
+      # cross-compile the arm64 layer without a native arm64 runner —
+      # required for the multi-platform build check below to actually
+      # execute RUN steps under arm64, not just declare the platform.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        # Buildx provides BuildKit: faster builds, better caching,
+        # multi-platform support. Always use it over plain docker build.
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app
+          push: false
+          # Build both architectures the fleet can run on (matches
+          # cd.yml). Catches a Dockerfile that only cross-builds on
+          # one platform before it reaches main — the exact class of
+          # bug that shipped an arm64-only image and broke amd64 nodes.
+          platforms: linux/amd64,linux/arm64
+          # cache-from/cache-to share the Docker layer cache with
+          # GitHub's cache service. A layer that didn't change
+          # (e.g. node_modules after npm ci) is restored from cache
+          # instead of rebuilt — the npm ci layer alone saves ~30 seconds.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

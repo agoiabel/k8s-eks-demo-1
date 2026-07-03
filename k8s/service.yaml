@@ -1,0 +1,30 @@
+# The Service provides a stable address for reaching the pods.
+# Pods restart constantly with new IPs — the Service's address never changes.
+#
+# type: LoadBalancer on EKS causes Kubernetes to call the AWS API
+# and provision a real Classic Load Balancer automatically.
+# The CLB gets a public DNS hostname that routes internet traffic
+# to a NodePort on your worker nodes, which routes to the right pod.
+# You never configure any of that manually — it's all from this one field.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodejs-demo-svc
+  namespace: nodejs-demo
+  labels:
+    app: nodejs-demo
+spec:
+  type: LoadBalancer
+
+  # The Service finds its pods purely by this label selector.
+  # It has no knowledge of the Deployment — it just watches for
+  # any pod in this namespace with app: nodejs-demo.
+  selector:
+    app: nodejs-demo
+
+  ports:
+    - name: http
+      port: 80          # the Load Balancer listens on port 80 externally
+      targetPort: http  # routes to the named port on the pod (3000)
+      protocol: TCP
